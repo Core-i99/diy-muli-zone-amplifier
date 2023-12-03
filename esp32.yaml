@@ -1,0 +1,83 @@
+esphome:
+  name: esp32
+  friendly_name: ESP32
+
+esp32:
+  board: az-delivery-devkit-v4
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "En496Vgolp+ayyTM1Js5cITQuQ7WDxhiRv5kSAknQ94="
+
+ota:
+  password: "174a16f01cccdaff5577055f623c7e3f"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Esp32 Fallback Hotspot"
+    password: "2XCHIBRWI4G6"
+
+captive_portal:
+
+switch:
+  - platform: gpio
+    pin: 12
+    name: "Relay"
+  - platform: template
+    name: "LED1"
+    optimistic: true
+    id: "led1_switch"
+    turn_on_action:
+      - output.turn_on: led_1
+      - output.set_level:
+          id: led_1
+          level: "5%"
+    turn_off_action:
+      - output.turn_off: led_1
+  - platform: template
+    name: "LED2"
+    optimistic: true
+    id: "led2_switch"
+    turn_on_action:
+      - output.turn_on: led_2
+      - output.set_level:
+          id: led_2
+          level: "5%"
+    turn_off_action:
+      - output.turn_off: led_2
+
+binary_sensor:
+  - platform: gpio
+    pin: 25
+    name: PUSH1
+    filters:
+      - delayed_off: 10ms
+    on_press:
+      then:
+        - switch.toggle: led1_switch
+  - platform: gpio
+    pin: 26
+    name: PUSH2
+    filters:
+      - delayed_off: 10ms
+    on_press:
+      then:
+        - switch.toggle: led2_switch
+
+output:
+  - platform: ledc
+    pin: GPIO14
+    id: led_1
+  - platform: ledc
+    pin: GPIO13
+    id: led_2
