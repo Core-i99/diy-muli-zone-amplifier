@@ -1,4 +1,4 @@
-#include <USIWire.h>
+#include <Wire.h>
 #include <DigiPotX9Cxxx.h>
 #include <RotaryEncoder.h>
 
@@ -97,8 +97,10 @@ void requestEvent()
 
 void receiveEvent(int bytes)
 {
-  zone.volume = Wire.read();
-  zone.enabled = Wire.read();
+  for (int i = 0; i < sizeof(zone); i++) {
+    ((uint8_t*)&zone)[i] = Wire.read();
+  }
+  setVolume();
 }
 
 void setVolume()
