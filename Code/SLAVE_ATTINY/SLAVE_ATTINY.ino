@@ -2,8 +2,6 @@
 #include <DigiPotX9Cxxx.h>
 #include <RotaryEncoder.h>
 
-#define I2C_DEV_ADDR 0x55
-
 const int ROTARYMIN = 0;
 const int ROTARYMAX = 100;
 const int RO_IN_SW = 0;
@@ -22,11 +20,11 @@ unsigned long debounceDelay = 50;    // the debounce time; increase if the outpu
 
 struct Zone
 {
-  int volume;
+  int16_t volume;
   bool enabled;
 };
 
-Zone zone = {0, false};
+Zone zone1 = {0, false};
 
 DigiPot pot(POT_INC, POT_UD, POT_CS);
 RotaryEncoder encoder(RO_IN_CLK, RO_IN_DT, RotaryEncoder::LatchMode::TWO03);
@@ -34,7 +32,7 @@ RotaryEncoder encoder(RO_IN_CLK, RO_IN_DT, RotaryEncoder::LatchMode::TWO03);
 // Pin for enabled
 void setup()
 {
-  Wire.begin(I2C_DEV_ADDR);
+  Wire.begin(8); // I2C address 8
   Wire.onRequest(requestEvent);
   Wire.onReceive(receiveEvent);
   pot.reset();
@@ -62,7 +60,7 @@ void loop()
 
       // only toggle the zone status if the new button state is LOW
       if (buttonState == LOW) {
-        zone.enabled = !zone.enabled;
+        zone1.enabled = !zone1.enabled;
       }
     }
   }
@@ -73,7 +71,6 @@ void loop()
 
   // Rotary encoder rotation
   encoder.tick(); 
-
   int newPos = encoder.getPosition();
 
   if (newPos < ROTARYMIN) {
@@ -85,21 +82,22 @@ void loop()
     newPos = ROTARYMAX;
   }
   else {
-    zone.volume = newPos;
+    zone1.volume = newPos;
     setVolume();
   }
 }
 
 void requestEvent()
 {
-  Wire.write((byte *)&zone, sizeof(zone));
+  Wire.write((byte *)&zone1, sizeof(zone1));
 }
 
 void receiveEvent(int bytes)
 {
-  for (int i = 0; i < sizeof(zone); i++) {
-    ((uint8_t*)&zone)[i] = Wire.read();
+  for (int i = 0; i < sizeof(zone1); i++) {
+    ((uint8_t*)&zone1)[i] = Wire.read();
   }
+  encoder.setPosition(zone1.volume);
   setVolume();
 }
 
@@ -107,11 +105,11 @@ void setVolume()
 {
   // Map the volume level to the potentiometer value, which is between 0 and 99
   // But we need to invert the volume level, because a potentiometer value of 0 is the highest volume level
-  int potlevel = map(100 - zone.volume, 0, 100, 0, 99);
+  int potlevel = map(100 - zone1.volume, 0, 100, 0, 99);
 
   // Set the potentiometer value
   pot.set(potlevel);
 
   // Set the enabled pin
-  digitalWrite(ZONE_ENABLE, zone.enabled);
+  digitalWrite(ZONE_ENABLE, zone1.enabled);
 }
