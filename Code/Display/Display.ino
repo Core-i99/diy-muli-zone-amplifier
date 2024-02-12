@@ -26,45 +26,124 @@
 #include <TFT_eSPI.h> // Hardware-specific library
 #include "Free_Fonts.h" // Include the header file attached to this sketch
 #include "WiFi.h"
-#include "AudioTools.h"
-#include "AudioCodecs/CodecMP3Helix.h"
+#include "Audio.h"
+#include <Wire.h>
+#include <RotaryEncoder.h>
+#include <ArduinoHA.h>
 
-const char *urls[] = {
-    "http://icecast.vrtcdn.be/mnm-high.mp3"};
+// I2S module pins
+#define I2S_DOUT 17
+#define I2S_BCLK 0
+#define I2S_LRC 16
 
-// Wifi
-const char *wifi = "Boshoek44c-verdiep-2.4GHz";
-const char *password = "Boshoek44c1";
+// Rotary encoder pins
+#define ROT_DT 34
+#define ROT_CLK 39
+#define ROTARYMIN 0
+#define ROTARYMAX 100
 
-// Zone Variables
-int zone1_vol = 0;
-int zone2_vol = 0;
-int zone3_vol = 0;
-bool zone1_status = false;
-bool zone2_status = false;
-bool zone3_status = false;
+// WIFI
+String ssid = "Boshoek44c-verdiep-2.4GHz";
+String password = "Boshoek44c1";
 
+// I2C ADDR
+#define I2C_ZONE1_ADDR 0x55
+#define I2C_ZONE2_ADDR 0x56
+#define I2C_ZONE3_ADDR 0x57
+
+// MQTT
+#define MQTT_BROKER_IP IPAddress(192, 168, 0, 21)
+const String MQTT_BROKER_USER = "stijn";
+const String MQTT_BROKER_PASS = "password";
+
+// 
 TFT_eSPI tft = TFT_eSPI();                   // Invoke custom library with default width and height
-URLStream urlStream(wifi, password);
-AudioSourceURL source(urlStream, urls, "audio/mp3");
-I2SStream i2s;
-MP3DecoderHelix decoder;
-AudioPlayer player(source, i2s, decoder);
+Audio audio;
+RotaryEncoder *encoder = nullptr;
+//WiFiClient client;
+//HADevice device;
+//HAMqtt mqtt(client, device);
+
+// Home Assistant
+//HASwitch zone1Switch("zone1");
+//HANumber zone1Volume("zone1_volume");
+//HASwitch zone2Switch("zone1");
+//HANumber zone2Volume("zone1_volume");
+//HASwitch zone3Switch("zone1");
+//HANumber zone3Volume("zone1_volume");
+
+// Zone struct
+struct Zone
+{
+  int16_t volume;
+  bool enabled;
+};
+Zone zone1;
+Zone zone2;
+Zone zone3;
+
+// Rotary Encoder interrupt
+IRAM_ATTR void checkPosition()
+{
+  encoder->tick(); // just call tick() to check the state.
+}
 
 void setup(void) {
   // Serial setup
   Serial.begin(115200);
+ 
+  // Unique ID
+//  byte mac[6];
+//  WiFi.macAddress(mac);
+//  device.setUniqueId(mac, sizeof(mac));
 
-  // Audio setup
-  auto config = i2s.defaultConfig(TX_MODE);
-  config.pin_bck = 0;
-  config.pin_ws = 10;
-  config.pin_data = 11;
-  i2s.begin(config);
+  // WIFI
+  WiFi.disconnect();
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid.c_str(), password.c_str());
+  while (WiFi.status() != WL_CONNECTED)
+    delay(1500);
 
-  // setup player
-  player.begin();
+  // Home assistant
+//  device.setName("Versterker");
+//  device.setSoftwareVersion("1.0.0");
+//  zone1Switch.setName("Zone 1");
+//  zone1Volume.setName("Zone 1 Volume");
+//  zone1Volume.setMin(0);
+//  zone1Volume.setMax(100);
+//  zone1Volume.setStep(1);
+//  zone1Volume.setMode(HANumber::ModeSlider);
+//  zone1Volume.setState(0);
+//  zone2Switch.setName("Zone 2");
+//  zone2Volume.setName("Zone 2 Volume");
+//  zone2Volume.setMin(0);
+//  zone2Volume.setMax(100);
+//  zone2Volume.setStep(1);
+//  zone2Volume.setMode(HANumber::ModeSlider);
+//  zone2Volume.setState(0);
+//  zone3Switch.setName("Zone 3");
+//  zone3Volume.setName("Zone 3 Volume");
+//  zone3Volume.setMin(0);
+//  zone3Volume.setMax(100);
+//  zone3Volume.setStep(1);
+//  zone3Volume.setMode(HANumber::ModeSlider);
+//  zone3Volume.setState(0);
+//    mqtt.begin(BROKER_ADDR, MQTT_BROKER_USER, MQTT_BROKER_PASS);
+  
+  // I2C
+  Wire.begin();
 
+  // Rotary encoder
+  encoder = new RotaryEncoder(ROT_DT, ROT_CLK, RotaryEncoder::LatchMode::TWO03);
+  attachInterrupt(digitalPinToInterrupt(ROT_DT), checkPosition, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ROT_CLK), checkPosition, CHANGE);
+  
+  // I2S
+  audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
+  audio.setVolumeSteps(100); // max 255
+  audio.setVolume(15);
+  audio.connecttohost("http://icecast.vrtcdn.be/mnm-high.mp3");
+  
   // TFT setup
   tft.begin();
   tft.setRotation(3);
@@ -111,10 +190,24 @@ void setup(void) {
   digitalWrite(32, HIGH);
 }
 
-void loop() { 
-  // updateVolume(); // remove comments to activate volume control
-  // updatePosition();  // remove comments to activate position control
-  player.copy();
+void loop() {
+  // Rotary encoder
+  int newpos = encoder->getPosition();
+  if(newpos > ROTARYMAX){
+    encoder->setPosition(ROTARYMAX);
+    newpos = ROTARYMAX;
+  }
+  else if (newpos < ROTARYMIN){
+    encoder->setPosition(ROTARYMIN);
+    newpos = ROTARYMIN;
+  }
+  else{
+    Serial.print("Position:");
+    Serial.println(newpos);
+  }
+
+  // I2S
+  audio.loop();
 }
 
 void setZoneStatus(int zone, bool status){
@@ -129,13 +222,13 @@ void setZoneStatus(int zone, bool status){
     tft.drawString("OFF", 200, getZoneY(zone));
   }
   if (zone == 1){
-    zone1_status = status;
+    zone1.enabled = status;
   }
   else if (zone == 2){
-    zone2_status = status;
+    zone2.enabled = status;
   }
   else if (zone == 3){
-    zone3_status = status;
+    zone3.enabled = status;
   }
 }
 
@@ -147,13 +240,13 @@ void setZoneVolume(int zone, int volume){
   tft.drawString("       %", 474, getZoneY(zone));
   tft.drawString(String(volume)+"%", 474, getZoneY(zone));
   if (zone == 1){
-    zone3_vol = volume;
+    zone1.volume = volume;
   }
   else if (zone == 2){
-    zone2_vol = volume;
+    zone2.volume = volume;
   }
   else if (zone == 3){
-    zone3_vol = volume;
+    zone3.volume = volume;
   }
 }
 
