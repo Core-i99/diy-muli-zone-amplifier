@@ -3,7 +3,8 @@
 #include "WiFi.h"
 #include <ArduinoJson.h>
 #include "SD.h"
-#include "Audio.h"
+#include "AudioTools.h"
+#include "AudioCodecs/CodecMP3Helix.h"
 #include <Wire.h>
 #include <RotaryEncoder.h>
 
@@ -51,13 +52,27 @@ struct Zone
   bool enabled;
 };
 
+const char *urls[] = {
+    "https://vrt.streamabc.net/vrt-radio2antwerpen-mp3-128-8732799",
+    "https://playerservices.streamtheworld.com/api/livestream-redirect/NOSTALGIEWHATAFEELING.mp3",
+    "https://playerservices.streamtheworld.com/api/livestream-redirect/JOE_SC",
+    "https://vrt.streamabc.net/vrt-radio1-mp3-128-9751183",
+    "https://vrt.streamabc.net/vrt-studiobrussel-mp3-128-4409118",
+    "https://vrt.streamabc.net/vrt-mnm-mp3-128-9205274"};
+
 Config config;
 TFT_eSPI tft = TFT_eSPI();
-Audio audio;
 Zone zone1;
 Zone zone2;
 Zone zone3;
 RotaryEncoder *encoder = nullptr;
+
+// Pointers to AudioTools objects
+URLStream *urlStreamPtr;
+AudioSourceURL *sourcePtr;
+I2SStream *i2sPtr;
+MP3DecoderHelix *decoderPtr;
+AudioPlayer *playerPtr;
 
 unsigned long lastI2cTime = 0;
 unsigned long i2cTimeDelay = 50;
@@ -113,7 +128,6 @@ void setAudioInput(){
 }
 
 void setRadioStation(){
-  // audio.setConnectionTimeout(500, 500); // Set connection timeout 500 http, 500 ssl
   Serial.print("Connect to IR: ");
   if (current_audio_input == 0){
     // Write to TFT
@@ -121,7 +135,8 @@ void setRadioStation(){
     tft.setTextColor(TFT_MAGENTA, TFT_BLUE);
     tft.setTextDatum(TC_DATUM);
     tft.drawString("ZENDER: " + String(config.radioStations[current_radio_station].name), 239, 50, 4);
-    audio.connecttohost(config.radioStations[current_radio_station].url);
+    // TODO: connect to url
+    playerPtr->setIndex(current_radio_station);
     Serial.println(config.radioStations[current_radio_station].name);
   }
 }
@@ -239,32 +254,43 @@ void setup()
   file.close();
   SD.end();
 
-  // Connect to wifi
-  WiFi.disconnect();
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(config.ssid, config.pass);
-  startupTFT("Verbinden met WIFI");
-  int wifiTries = 0;
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    wifiTries++;
-    if (wifiTries > 10){
-      startupTFT("Kan niet verbinden met WIFI", true);
-    }
-  }
+  // // Connect to wifi
+  // WiFi.disconnect();
+  // WiFi.mode(WIFI_STA);
+  // WiFi.begin(config.ssid, config.pass);
+  // startupTFT("Verbinden met WIFI");
+  // int wifiTries = 0;
+  // while (WiFi.status() != WL_CONNECTED) {
+  //   delay(500);
+  //   wifiTries++;
+  //   if (wifiTries > 10){
+  //     startupTFT("Kan niet verbinden met WIFI", true);
+  //   }
+  // }
   // Setup audio inut selector
   pinMode(AUDIO_INPUT_SELECTOR_P1, OUTPUT);
   pinMode(AUDIO_INPUT_SELECTOR_P2, OUTPUT);
 
   // Connect to internet radio (I2S)
   startupTFT("Verbinden met internet radio");
-  audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-  audio.setVolumeSteps(100); // max 255
-  audio.setVolume(25);
+  // TODO 
+  urlStreamPtr = new URLStream(config.ssid, config.pass); // Initialize URLStream with WiFi credentials
+  sourcePtr = new AudioSourceURL(*urlStreamPtr, urls, "audio/mp3"); // Create an AudioSourceURL object with the URLs
+  i2sPtr = new I2SStream(); // Initialize I2SStream for audio output
+  decoderPtr = new MP3DecoderHelix(); // Initialize MP3DecoderHelix for decoding MP3 audio
+  playerPtr = new AudioPlayer(*sourcePtr, *i2sPtr, *decoderPtr); // Create an AudioPlayer object with the source, output, and decoder
+  auto config = i2sPtr->defaultConfig(TX_MODE);
+  config.pin_bck = I2S_BCLK;
+  config.pin_ws = I2S_LRC;
+  config.pin_data = I2S_DOUT;
+  i2sPtr->begin(config);
+  playerPtr->setVolume(0.25);
+  playerPtr->begin();
 
   // Connect to zone controllers (I2C)
   startupTFT("Verbinden met zone controllers");
   Wire.begin();
+  Wire.setTimeout(10);
   Serial.println("Zone 1 i2c");
   Wire.requestFrom(ZONE1_I2C_ADDR, sizeof(zone1));
   Wire.readBytes((byte *)&zone1, sizeof(zone1));
@@ -308,7 +334,8 @@ void setup()
 void loop()
 {
   // Internet Radio (I2S)
-  audio.loop();
+  // TODO
+  playerPtr->copy();
 
   // Rotary encoder RO    
   if (encoder->getPosition() > 1)
@@ -364,13 +391,13 @@ void loop()
     bool zone2_enabled_old = zone2.enabled;
     int16_t zone3_vol_old = zone3.volume;
     bool zone3_enabled_old = zone3.enabled;
-    Serial.println("Zone 1 i2c");
+    // Serial.println("Zone 1 i2c");
     Wire.requestFrom(ZONE1_I2C_ADDR, sizeof(zone1));
     Wire.readBytes((byte *)&zone1, sizeof(zone1));
-    Serial.println("Zone 2 i2c");
+    // Serial.println("Zone 2 i2c");
     Wire.requestFrom(ZONE2_I2C_ADDR, sizeof(zone2));
     Wire.readBytes((byte *)&zone2, sizeof(zone2));
-    Serial.println("Zone 3 i2c");
+    // Serial.println("Zone 3 i2c");
     Wire.requestFrom(ZONE3_I2C_ADDR, sizeof(zone3));
     Wire.readBytes((byte *)&zone3, sizeof(zone3));
     if (zone1.enabled != zone1_enabled_old){

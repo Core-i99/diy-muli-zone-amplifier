@@ -5,8 +5,8 @@
 const int ROTARYMIN = 0;
 const int ROTARYMAX = 100;
 const int RO_IN_SW = 0;
-const int RO_IN_DT = 1;
-const int RO_IN_CLK = 2;
+const int RO_IN_DT = 2;
+const int RO_IN_CLK = 1;
 const int ZONE_ENABLE = 3;
 const int POT_INC = 7;
 const int POT_CS = 8;
@@ -32,7 +32,7 @@ RotaryEncoder encoder(RO_IN_CLK, RO_IN_DT, RotaryEncoder::LatchMode::TWO03);
 // Pin for enabled
 void setup()
 {
-  Wire.begin(8); // I2C address 8
+  Wire.begin(10); // 8, 9, 10
   Wire.onRequest(requestEvent);
   Wire.onReceive(receiveEvent);
   pot.reset();
@@ -111,5 +111,5 @@ void setVolume()
   pot.set(potlevel);
 
   // Set the enabled pin
-  digitalWrite(ZONE_ENABLE, zone1.enabled);
+  digitalWrite(ZONE_ENABLE, !zone1.enabled);
 }

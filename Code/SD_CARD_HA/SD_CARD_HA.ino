@@ -25,13 +25,18 @@ uint8_t current_radio_station = 0;
 uint8_t number_of_radio_stations = 0;
 
 // Rotary encoder
-#define RO_IN1 34
-#define RO_IN2 39
+#define RO_IN1 39
+#define RO_IN2 34
 #define RO_IN_SW 35
 int roState;
 int lastRoState = LOW;
 unsigned long roLastDebounceTime = 0;
 unsigned long roDebounceDelay = 50;
+
+// MQTT
+#define MQTT_BROKER_IP IPAddress(192, 168, 0, 21)
+const String MQTT_BROKER_USER = "stijn";
+const String MQTT_BROKER_PASS = "password";
 
 struct Config
 {
@@ -58,6 +63,17 @@ Zone zone1;
 Zone zone2;
 Zone zone3;
 RotaryEncoder *encoder = nullptr;
+WiFiClient client;
+HADevice device;
+HAMqtt mqtt(client, device);
+
+Home Assistant
+HASwitch zone1Switch("zone1");
+HANumber zone1Volume("zone1_volume");
+HASwitch zone2Switch("zone1");
+HANumber zone2Volume("zone1_volume");
+HASwitch zone3Switch("zone1");
+HANumber zone3Volume("zone1_volume");
 
 unsigned long lastI2cTime = 0;
 unsigned long i2cTimeDelay = 50;
@@ -113,16 +129,14 @@ void setAudioInput(){
 }
 
 void setRadioStation(){
-  // audio.setConnectionTimeout(500, 500); // Set connection timeout 500 http, 500 ssl
-  Serial.print("Connect to IR: ");
+  audio.setConnectionTimeout(500, 500); // Set connection timeout 500 http, 500 ssl
+  audio.connecttohost(config.radioStations[current_radio_station].url);
   if (current_audio_input == 0){
     // Write to TFT
     tft.fillRect(0, 40, 480, 40, TFT_BLUE);
     tft.setTextColor(TFT_MAGENTA, TFT_BLUE);
     tft.setTextDatum(TC_DATUM);
     tft.drawString("ZENDER: " + String(config.radioStations[current_radio_station].name), 239, 50, 4);
-    audio.connecttohost(config.radioStations[current_radio_station].url);
-    Serial.println(config.radioStations[current_radio_station].name);
   }
 }
 
@@ -234,8 +248,6 @@ void setup()
     index++;
   }
   number_of_radio_stations = index;
-  Serial.print("Number of radio stations: ");
-  Serial.println(number_of_radio_stations);
   file.close();
   SD.end();
 
@@ -260,7 +272,7 @@ void setup()
   startupTFT("Verbinden met internet radio");
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
   audio.setVolumeSteps(100); // max 255
-  audio.setVolume(25);
+  audio.setVolume(15);
 
   // Connect to zone controllers (I2C)
   startupTFT("Verbinden met zone controllers");
@@ -269,12 +281,56 @@ void setup()
   Wire.requestFrom(ZONE1_I2C_ADDR, sizeof(zone1));
   Wire.readBytes((byte *)&zone1, sizeof(zone1));
   Serial.println("Zone 2 i2c");
-  Wire.requestFrom(ZONE2_I2C_ADDR, sizeof(zone2));
+  Wire.requestFrom(ZONE2_I2C_ADDR, sizeof(zone1));
   Wire.readBytes((byte *)&zone2, sizeof(zone2));
   Serial.println("Zone 3 i2c");
-  Wire.requestFrom(ZONE3_I2C_ADDR, sizeof(zone3));
+  Wire.requestFrom(ZONE3_I2C_ADDR, sizeof(zone1));
   Wire.readBytes((byte *)&zone3, sizeof(zone3));
   Serial.println("I2C Finished");
+
+  // MQTT (Home Assistant)
+  byte mac[6];
+  WiFi.macAddress(mac);
+  device.setUniqueId(mac, sizeof(mac));
+  device.setName("Versterker");
+  device.setSoftwareVersion("1.0.0");
+  zone1Switch.setName("Zone 1");
+  zone1Switch.onCommand(onZone1SwitchCommand);
+  zone1Volume.setName("Zone 1 Volume");
+  zone1Volume.setMin(0);
+  zone1Volume.setMax(100);
+  zone1Volume.setStep(1);
+  zone1Volume.setMode(HANumber::ModeSlider);
+  zone1Volume.onCommand(onZone1VolumeCommand);
+  zone1Volume.setState(0);
+  zone2Switch.setName("Zone 2");
+  zone2Switch.onCommand(onZone2SwitchCommand);
+  zone2Volume.setName("Zone 2 Volume");
+  zone2Volume.setMin(0);
+  zone2Volume.setMax(100);
+  zone2Volume.setStep(1);
+  zone2Volume.setMode(HANumber::ModeSlider);
+  zone1Volume.onCommand(onZone2VolumeCommand);
+  zone2Volume.setState(0);
+  zone3Switch.setName("Zone 3");
+  zone3Switch.onCommand(onZone3SwitchCommand);
+  zone3Volume.setName("Zone 3 Volume");
+  zone3Volume.setMin(0);
+  zone3Volume.setMax(100);
+  zone3Volume.setStep(1);
+  zone3Volume.setMode(HANumber::ModeSlider);
+  zone1Volume.onCommand(onZone3VolumeCommand);
+  zone3Volume.setState(0);
+  mqtt.begin(BROKER_ADDR, MQTT_BROKER_USER, MQTT_BROKER_PASS);
+
+  // Rotary encoder
+  pinMode(RO_IN_SW, INPUT);
+  encoder = new RotaryEncoder(RO_IN1, RO_IN2, RotaryEncoder::LatchMode::TWO03);
+  attachInterrupt(digitalPinToInterrupt(RO_IN1), roCheckPosition, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(RO_IN2), roCheckPosition, CHANGE);
+
+  // Audio Input
+  setAudioInput();
 
   // TFT Setup
   tft.fillScreen(TFT_BLACK);
@@ -294,15 +350,6 @@ void setup()
   setZoneVolume(3);
   tft.setTextDatum(TR_DATUM);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-
-  // Rotary encoder
-  pinMode(RO_IN_SW, INPUT);
-  encoder = new RotaryEncoder(RO_IN1, RO_IN2, RotaryEncoder::LatchMode::TWO03);
-  attachInterrupt(digitalPinToInterrupt(RO_IN1), roCheckPosition, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(RO_IN2), roCheckPosition, CHANGE);
-
-  // Audio Input
-  setAudioInput();
 }
 
 void loop()
@@ -310,25 +357,17 @@ void loop()
   // Internet Radio (I2S)
   audio.loop();
 
-  // Rotary encoder RO    
-  if (encoder->getPosition() > 1)
-  {
+  // Rotary encoder RO
+  if (encoder->getPosition() > 1 || encoder->getPosition() < -1){
+    encoder->setPosition(0);
     Serial.println("RO Position changed");
-    current_radio_station++;
-    if (current_radio_station > number_of_radio_stations -1){
+    if (current_radio_station == number_of_radio_stations -1){
+      Serial.println("END of radio stations");
       current_radio_station = 0;
     }
-    encoder->setPosition(0);
-    setRadioStation();
-  }
-  else if (encoder->getPosition() < -1)
-  {
-    Serial.println("RO Position changed");
-    current_radio_station--;
-    if (current_radio_station > number_of_radio_stations -1){
-      current_radio_station = number_of_radio_stations-1;
+    else {
+      current_radio_station++;
     }
-    encoder->setPosition(0);
     setRadioStation();
   }
 
@@ -343,7 +382,7 @@ void loop()
     if (roReading != roState) {
       roState = roReading;
       if (roState == LOW) {
-        Serial.println("RO Button pressed!");
+        Serial.println("Button pressed!");
         if (current_audio_input == 3){
           current_audio_input = 0;
         }
@@ -358,27 +397,27 @@ void loop()
 
   // // Read from Zone Controllers (I2C)
   if ((millis() - lastI2cTime) > i2cTimeDelay) {
-    int16_t zone1_vol_old = zone1.volume;
-    bool zone1_enabled_old = zone1.enabled;
+    // int16_t zone1_vol_old = zone1.volume;
+    // bool zone1_enabled_old = zone1.enabled;
     int16_t zone2_vol_old = zone2.volume;
     bool zone2_enabled_old = zone2.enabled;
     int16_t zone3_vol_old = zone3.volume;
     bool zone3_enabled_old = zone3.enabled;
-    Serial.println("Zone 1 i2c");
-    Wire.requestFrom(ZONE1_I2C_ADDR, sizeof(zone1));
-    Wire.readBytes((byte *)&zone1, sizeof(zone1));
+    // Serial.println("Zone 1 i2c");
+    // Wire.requestFrom(ZONE1_I2C_ADDR, sizeof(zone1));
+    // Wire.readBytes((byte *)&zone1, sizeof(zone1));
     Serial.println("Zone 2 i2c");
     Wire.requestFrom(ZONE2_I2C_ADDR, sizeof(zone2));
     Wire.readBytes((byte *)&zone2, sizeof(zone2));
     Serial.println("Zone 3 i2c");
     Wire.requestFrom(ZONE3_I2C_ADDR, sizeof(zone3));
     Wire.readBytes((byte *)&zone3, sizeof(zone3));
-    if (zone1.enabled != zone1_enabled_old){
-      setZoneStatus(1);
-    }
-    if (zone1.volume != zone1_vol_old){
-      setZoneVolume(1);
-    }
+    // if (zone1.enabled != zone1_enabled_old){
+    //   setZoneStatus(1);
+    // }
+    // if (zone1.volume != zone1_vol_old){
+    //   setZoneVolume(1);
+    // }
     if (zone2.enabled != zone2_enabled_old){
       setZoneStatus(2);
     }
@@ -391,9 +430,91 @@ void loop()
     if (zone3.volume != zone3_vol_old){
       setZoneVolume(3);
     }
+    zone1Volume.setState(zone1.volume);
+    zone1Switch.setState(zone1.enabled);
+    zone2Volume.setState(zone2.volume);
+    zone2Switch.setState(zone2.enabled);
+    zone3Volume.setState(zone3.volume),
+    zone3Switch.setState(zone3.enabled);
     lastI2cTime = millis();
   }
 }
 
 
+void onZone1SwitchCommand(bool state, HASwitch *sender)
+{
+  Serial.println("Zone 1 switch command received");
+  Serial.print("State: ");
+  Serial.println(state);
+  zone1.enabled = state;
+  // Write to I2C
+  Wire.beginTransmission(ZONE1_I2C_ADDR);
+  Wire.write((byte *)&zone1, sizeof(zone1));
+  Wire.endTransmission();
+  sender->setState(state); // report back to HA
+}
 
+void onZone1VolumeCommand(HANumeric number, HANumber *sender)
+{
+  Serial.println("Zone 1 volume command received");
+  Serial.print("Volume: ");
+  zone1.volume = number.toInt8();
+  Serial.println(volume1.volume);
+  // Write to I2C
+  Wire.beginTransmission(ZONE1_I2C_ADDR);
+  Wire.write((byte *)&zone1, sizeof(zone1));
+  Wire.endTransmission();
+  sender->setState(number); // report back to HA
+}
+
+void onZone2SwitchCommand(bool state, HASwitch *sender)
+{
+  Serial.println("Zone 2 switch command received");
+  Serial.print("State: ");
+  Serial.println(state);
+  zone2.enabled = state;
+  // Write to I2C
+  Wire.beginTransmission(ZONE2_I2C_ADDR);
+  Wire.write((byte *)&zone2, sizeof(zone2));
+  Wire.endTransmission();
+  sender->setState(state); // report back to HA
+}
+
+void onZone2VolumeCommand(HANumeric number, HANumber *sender)
+{
+  Serial.println("Zone 2 volume command received");
+  Serial.print("Volume: ");
+  zone2.volume = number.toInt8();
+  Serial.println(volume2.volume);
+  // Write to I2C
+  Wire.beginTransmission(ZONE2_I2C_ADDR);
+  Wire.write((byte *)&zone2, sizeof(zone2));
+  Wire.endTransmission();
+  sender->setState(number); // report back to HA
+}
+
+void onZone3SwitchCommand(bool state, HASwitch *sender)
+{
+  Serial.println("Zone 3 switch command received");
+  Serial.print("State: ");
+  Serial.println(state);
+  zone3.enabled = state;
+  // Write to I2C
+  Wire.beginTransmission(ZONE3_I2C_ADDR);
+  Wire.write((byte *)&zone3, sizeof(zone3));
+  Wire.endTransmission();
+  sender->setState(state); // report back to HA
+}
+
+void onZone3VolumeCommand(HANumeric number, HANumber *sender)
+{
+  Serial.println("Zone 3 volume command received");
+  Serial.print("Volume: ");
+  zone2.volume = number.toInt8();
+  Serial.println(volume3.volume);
+  // Write to I2C
+  Wire.beginTransmission(ZONE3_I2C_ADDR);
+  Wire.write((byte *)&zone3, sizeof(zone3));
+  Wire.endTransmission();
+  sender->setState(number); // report back to HA
+}
