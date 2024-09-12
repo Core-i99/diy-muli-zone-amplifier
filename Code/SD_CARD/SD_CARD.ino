@@ -61,6 +61,9 @@ RotaryEncoder *encoder = nullptr;
 
 unsigned long lastI2cTime = 0;
 unsigned long i2cTimeDelay = 50;
+bool wifiError = false;
+bool sdCardError = false;
+String errorMsg = "";
 
 IRAM_ATTR void roCheckPosition()
 {
@@ -90,31 +93,59 @@ void setAudioInput(){
   tft.setTextDatum(TC_DATUM);
   
   if (current_audio_input == 0){
-    digitalWrite(AUDIO_INPUT_SELECTOR_P1, LOW);
-    digitalWrite(AUDIO_INPUT_SELECTOR_P2, LOW); 
-    tft.drawString("INVOER: INTERNET RADIO", 239, 10, 4);
-    setRadioStation();
+    if (wifiError || sdCardError) {
+      current_audio_input = 1;
+      setAudioInput();
+    }
+    else {
+      digitalWrite(AUDIO_INPUT_SELECTOR_P1, LOW);
+      digitalWrite(AUDIO_INPUT_SELECTOR_P2, LOW); 
+      tft.drawString("INVOER: INTERNET RADIO", 239, 10, 4);
+      setRadioStation();
+    }
   }
   else if (current_audio_input == 1) {
     digitalWrite(AUDIO_INPUT_SELECTOR_P1, LOW);
-    digitalWrite(AUDIO_INPUT_SELECTOR_P2, HIGH); 
-    tft.drawString("INVOER: CD1", 239, 30, 4);
+    digitalWrite(AUDIO_INPUT_SELECTOR_P2, HIGH);
+    if (wifiError || sdCardError){
+      tft.drawString("INVOER: CD1", 239, 20, 4);
+      tft.setTextColor(TFT_RED, TFT_BLUE);
+      tft.drawString(String(errorMsg), 239, 50, 4);
+    }
+    else{
+      tft.drawString("INVOER: CD1", 239, 30, 4);
+    }
+    
   }
   else if (current_audio_input == 2) {
     digitalWrite(AUDIO_INPUT_SELECTOR_P1, HIGH);
     digitalWrite(AUDIO_INPUT_SELECTOR_P2, LOW); 
-    tft.drawString("INVOER: CD2", 239, 30, 4);
+    if (wifiError || sdCardError){
+      tft.drawString("INVOER: CD2", 239, 20, 4);
+      tft.setTextColor(TFT_RED, TFT_BLUE);
+      tft.drawString(String(errorMsg), 239, 50, 4);
+    }
+    else{
+      tft.drawString("INVOER: CD2", 239, 30, 4);
+    }
   }
   else if (current_audio_input == 3) {
     digitalWrite(AUDIO_INPUT_SELECTOR_P1, HIGH);
     digitalWrite(AUDIO_INPUT_SELECTOR_P2, HIGH); 
-    tft.drawString("INVOER: CD3", 239, 30, 4);
+    if (wifiError || sdCardError){
+      tft.drawString("INVOER: CD3", 239, 20, 4);
+      tft.setTextColor(TFT_RED, TFT_BLUE);
+      tft.drawString(String(errorMsg), 239, 50, 4);
+    }
+    else{
+      tft.drawString("INVOER: CD3", 239, 30, 4);
+    }
   }
 }
 
 void setRadioStation(){
   // audio.setConnectionTimeout(500, 500); // Set connection timeout 500 http, 500 ssl
-  Serial.print("Connect to IR: ");
+  // Serial.print("Connect to IR: ");
   if (current_audio_input == 0){
     // Write to TFT
     tft.fillRect(0, 40, 480, 40, TFT_BLUE);
@@ -122,12 +153,12 @@ void setRadioStation(){
     tft.setTextDatum(TC_DATUM);
     tft.drawString("ZENDER: " + String(config.radioStations[current_radio_station].name), 239, 50, 4);
     audio.connecttohost(config.radioStations[current_radio_station].url);
-    Serial.println(config.radioStations[current_radio_station].name);
+    // Serial.println(config.radioStations[current_radio_station].name);
   }
 }
 
 void setZoneStatus(int zone){
-  Serial.println("Set zone status: " + String(zone));
+  // Serial.println("Set zone status: " + String(zone));
   tft.setTextDatum(TL_DATUM);
   if (zone == 1){
     if (zone1.enabled){
@@ -162,7 +193,7 @@ void setZoneStatus(int zone){
 }
 
 void setZoneVolume(int zone){
-  Serial.println("Set zone volume: " + String(zone));
+  // Serial.println("Set zone volume: " + String(zone));
   tft.setTextDatum(TR_DATUM);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   // Reset the background
@@ -205,53 +236,65 @@ void setup()
   // Read SD Card configuration file
   if (!SD.begin(13)) // SD_CS = 13
   {
-    Serial.println("Card Mount Failed");
+    // Serial.println("Card Mount Failed");
     SD.end();
-    startupTFT("Fout bij het lezen van de SD kaart", true);
+    sdCardError = true;
+    // startupTFT("Fout bij het lezen van de SD kaart", true);
   }
-  File file = SD.open("/config.json");
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, file);
-  if (error){
+
+  if (!sdCardError){
+    File file = SD.open("/config.json");
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, file);
+    if (error){
+      file.close();
+      SD.end();
+      startupTFT("Fout bij het lezen van het configuratie bestand", true);
+    }
+    
+    strlcpy(config.ssid, doc["WIFI-SSID"], sizeof(config.ssid));
+    strlcpy(config.pass, doc["WIFI-PASS"], sizeof(config.pass));
+    JsonObject radioStations = doc["RADIO-STATIONS"].as<JsonObject>();
+    config.radioStations = new Config::RadioStation[radioStations.size()];
+    int index = 0;
+    for (JsonPair station : radioStations)
+    {
+      // Get the key and value
+      const char *stationName = station.key().c_str();
+      const char *stationURL = station.value().as<const char *>();
+      // Copy the station name and URL to the configuration object   
+      strlcpy(config.radioStations[index].name, stationName, sizeof(config.radioStations[index].name));
+      strlcpy(config.radioStations[index].url, stationURL, sizeof(config.radioStations[index].url));
+      index++;
+    }
+    number_of_radio_stations = index;
+    // Serial.print("Number of radio stations: ");
+    // Serial.println(number_of_radio_stations);
     file.close();
     SD.end();
-    startupTFT("Fout bij het lezen van het configuratie bestand", true);
-  }
-  
-  strlcpy(config.ssid, doc["WIFI-SSID"], sizeof(config.ssid));
-  strlcpy(config.pass, doc["WIFI-PASS"], sizeof(config.pass));
-  JsonObject radioStations = doc["RADIO-STATIONS"].as<JsonObject>();
-  config.radioStations = new Config::RadioStation[radioStations.size()];
-  int index = 0;
-  for (JsonPair station : radioStations)
-  {
-    // Get the key and value
-    const char *stationName = station.key().c_str();
-    const char *stationURL = station.value().as<const char *>();
-    // Copy the station name and URL to the configuration object   
-    strlcpy(config.radioStations[index].name, stationName, sizeof(config.radioStations[index].name));
-    strlcpy(config.radioStations[index].url, stationURL, sizeof(config.radioStations[index].url));
-    index++;
-  }
-  number_of_radio_stations = index;
-  Serial.print("Number of radio stations: ");
-  Serial.println(number_of_radio_stations);
-  file.close();
-  SD.end();
 
-  // Connect to wifi
-  WiFi.disconnect();
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(config.ssid, config.pass);
-  startupTFT("Verbinden met WIFI");
-  int wifiTries = 0;
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    wifiTries++;
-    if (wifiTries > 10){
-      startupTFT("Kan niet verbinden met WIFI", true);
+    // Connect to wifi
+    WiFi.disconnect();
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(config.ssid, config.pass);
+    startupTFT("Verbinden met WIFI (10)");
+    int wifiTries = 0;
+    while (WiFi.status() != WL_CONNECTED) {
+      // TODO: Make countdown in seconds """Verbinden met WiFi (5)"
+      delay(500);
+      wifiTries++;
+      if ((20 - wifiTries) % 2 == 0)
+      { 
+        startupTFT(String("Verbinden met wifi (" + String((20 - wifiTries) / 2) + ")").c_str());
+      }
+      if (wifiTries > 20){
+        // startupTFT("Kan niet verbinden met WIFI", true);
+        wifiError = true;
+        break;
+      }
     }
   }
+  
   // Setup audio inut selector
   pinMode(AUDIO_INPUT_SELECTOR_P1, OUTPUT);
   pinMode(AUDIO_INPUT_SELECTOR_P2, OUTPUT);
@@ -265,16 +308,16 @@ void setup()
   // Connect to zone controllers (I2C)
   startupTFT("Verbinden met zone controllers");
   Wire.begin();
-  Serial.println("Zone 1 i2c");
+  // Serial.println("Zone 1 i2c");
   Wire.requestFrom(ZONE1_I2C_ADDR, sizeof(zone1));
   Wire.readBytes((byte *)&zone1, sizeof(zone1));
-  Serial.println("Zone 2 i2c");
+  // Serial.println("Zone 2 i2c");
   Wire.requestFrom(ZONE2_I2C_ADDR, sizeof(zone2));
   Wire.readBytes((byte *)&zone2, sizeof(zone2));
-  Serial.println("Zone 3 i2c");
+  // Serial.println("Zone 3 i2c");
   Wire.requestFrom(ZONE3_I2C_ADDR, sizeof(zone3));
   Wire.readBytes((byte *)&zone3, sizeof(zone3));
-  Serial.println("I2C Finished");
+  // Serial.println("I2C Finished");
 
   // TFT Setup
   tft.fillScreen(TFT_BLACK);
@@ -301,35 +344,44 @@ void setup()
   attachInterrupt(digitalPinToInterrupt(RO_IN1), roCheckPosition, CHANGE);
   attachInterrupt(digitalPinToInterrupt(RO_IN2), roCheckPosition, CHANGE);
 
+  if (wifiError){
+    errorMsg = "Offline modus: geen WiFi verbinding";
+  }
+  else if (sdCardError){
+    errorMsg = "Offline modus: SD kaart niet leesbaar";
+  }
   // Audio Input
   setAudioInput();
 }
 
 void loop()
 {
-  // Internet Radio (I2S)
-  audio.loop();
+  if (!sdCardError && !wifiError)
+  {
+    // Internet Radio (I2S)
+    audio.loop();
 
-  // Rotary encoder RO    
-  if (encoder->getPosition() > 1)
-  {
-    Serial.println("RO Position changed");
-    current_radio_station++;
-    if (current_radio_station > number_of_radio_stations -1){
-      current_radio_station = 0;
+    // Rotary encoder RO    
+    if (encoder->getPosition() > 1)
+    {
+      // Serial.println("RO Position changed");
+      current_radio_station++;
+      if (current_radio_station > number_of_radio_stations -1){
+        current_radio_station = 0;
+      }
+      encoder->setPosition(0);
+      setRadioStation();
     }
-    encoder->setPosition(0);
-    setRadioStation();
-  }
-  else if (encoder->getPosition() < -1)
-  {
-    Serial.println("RO Position changed");
-    current_radio_station--;
-    if (current_radio_station > number_of_radio_stations -1){
-      current_radio_station = number_of_radio_stations-1;
+    else if (encoder->getPosition() < -1)
+    {
+      // Serial.println("RO Position changed");
+      current_radio_station--;
+      if (current_radio_station > number_of_radio_stations -1){
+        current_radio_station = number_of_radio_stations-1;
+      }
+      encoder->setPosition(0);
+      setRadioStation();
     }
-    encoder->setPosition(0);
-    setRadioStation();
   }
 
   // Rotary encoder SW
@@ -338,12 +390,12 @@ void loop()
     roLastDebounceTime = millis();
   }
 
-  if ((millis() - roLastDebounceTime) < roDebounceDelay){
+  if ((millis() - roLastDebounceTime) > roDebounceDelay){
     // if the button state has changed:
     if (roReading != roState) {
       roState = roReading;
       if (roState == LOW) {
-        Serial.println("RO Button pressed!");
+        // Serial.println("RO Button pressed!");
         if (current_audio_input == 3){
           current_audio_input = 0;
         }
@@ -364,13 +416,13 @@ void loop()
     bool zone2_enabled_old = zone2.enabled;
     int16_t zone3_vol_old = zone3.volume;
     bool zone3_enabled_old = zone3.enabled;
-    Serial.println("Zone 1 i2c");
+    //Serial.println("Zone 1 i2c");
     Wire.requestFrom(ZONE1_I2C_ADDR, sizeof(zone1));
     Wire.readBytes((byte *)&zone1, sizeof(zone1));
-    Serial.println("Zone 2 i2c");
+    // Serial.println("Zone 2 i2c");
     Wire.requestFrom(ZONE2_I2C_ADDR, sizeof(zone2));
     Wire.readBytes((byte *)&zone2, sizeof(zone2));
-    Serial.println("Zone 3 i2c");
+    // Serial.println("Zone 3 i2c");
     Wire.requestFrom(ZONE3_I2C_ADDR, sizeof(zone3));
     Wire.readBytes((byte *)&zone3, sizeof(zone3));
     if (zone1.enabled != zone1_enabled_old){
