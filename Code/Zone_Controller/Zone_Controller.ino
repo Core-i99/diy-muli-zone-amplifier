@@ -12,7 +12,7 @@ Flash instructions: see SLAVE_FLASHING.md
 #include <RotaryEncoder.h>
 
 const int ROTARYMIN = 0;
-const int ROTARYMAX = 100;
+const int ROTARYMAX = 200;
 const int RO_IN_SW = 0;
 const int RO_IN_DT = 2;
 const int RO_IN_CLK = 1;
@@ -91,7 +91,7 @@ void loop()
     newPos = ROTARYMAX;
   }
   else {
-    zone1.volume = newPos;
+    zone1.volume = int(newPos / 2);
     setVolume();
   }
 }
@@ -106,7 +106,7 @@ void receiveEvent(int bytes)
   for (int i = 0; i < sizeof(zone1); i++) {
     ((uint8_t*)&zone1)[i] = Wire.read();
   }
-  encoder.setPosition(zone1.volume);
+  encoder.setPosition(zone1.volume * 2);
   setVolume();
 }
 
