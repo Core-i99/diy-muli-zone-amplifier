@@ -1,3 +1,12 @@
+/*
+Slave: Zone controller - Attiny44
+I2C addresses:
+  Zone 1: 8
+  Zone 2: 9
+  Zone 3: 10
+Flash instructions: see SLAVE_FLASHING.md
+*/
+
 #include <Wire.h>
 #include <DigiPotX9Cxxx.h>
 #include <RotaryEncoder.h>
