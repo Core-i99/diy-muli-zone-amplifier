@@ -1,6 +1,6 @@
 {
-  "WIFI-SSID": "Boshoek44c-2.4GHz",
-  "WIFI-PASS": "Boshoek44c1",
+  "WIFI-SSID": "SSID",
+  "WIFI-PASS": "Pass",
   "RADIO-STATIONS": {
     "Radio 2 Antwerpen": "http://icecast.vrtcdn.be/ra2ant-high.mp3",
     "Radio 1": "http://icecast.vrtcdn.be/radio1-high.mp3",
