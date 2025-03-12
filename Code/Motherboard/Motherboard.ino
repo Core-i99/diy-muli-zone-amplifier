@@ -240,8 +240,6 @@ void setup()
   Serial.begin(115200);
 
   // Setup display
-  pinMode(32, OUTPUT);
-  digitalWrite(32, HIGH);
   tft.begin();
   tft.setRotation(3);
   startupTFT("Lezen van SD kaart");
