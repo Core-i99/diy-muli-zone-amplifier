@@ -321,15 +321,16 @@ void setup()
   // Connect to zone controllers (I2C)
   startupTFT("Verbinden met zone controllers");
   Wire.begin();
+  Wire.setTimeout(2);
   // Serial.println("Zone 1 i2c");
   Wire.requestFrom(ZONE1_I2C_ADDR, sizeof(zone1));
-  Wire.readBytes((byte *)&zone1, sizeof(zone1));
+  Wire.readBytes((uint8_t *)&zone1, sizeof(zone1));
   // Serial.println("Zone 2 i2c");
   Wire.requestFrom(ZONE2_I2C_ADDR, sizeof(zone2));
-  Wire.readBytes((byte *)&zone2, sizeof(zone2));
+  Wire.readBytes((uint8_t *)&zone2, sizeof(zone2));
   // Serial.println("Zone 3 i2c");
   Wire.requestFrom(ZONE3_I2C_ADDR, sizeof(zone3));
-  Wire.readBytes((byte *)&zone3, sizeof(zone3));
+  Wire.readBytes((uint8_t *)&zone3, sizeof(zone3));
   // Serial.println("I2C Finished");
 
   // TFT Setup
@@ -441,13 +442,13 @@ void loop()
     bool zone3_enabled_old = zone3.enabled;
     //Serial.println("Zone 1 i2c");
     Wire.requestFrom(ZONE1_I2C_ADDR, sizeof(zone1));
-    Wire.readBytes((byte *)&zone1, sizeof(zone1));
+    Wire.readBytes((uint8_t *)&zone1, sizeof(zone1));
     // Serial.println("Zone 2 i2c");
     Wire.requestFrom(ZONE2_I2C_ADDR, sizeof(zone2));
-    Wire.readBytes((byte *)&zone2, sizeof(zone2));
+    Wire.readBytes((uint8_t *)&zone2, sizeof(zone2));
     // Serial.println("Zone 3 i2c");
     Wire.requestFrom(ZONE3_I2C_ADDR, sizeof(zone3));
-    Wire.readBytes((byte *)&zone3, sizeof(zone3));
+    Wire.readBytes((uint8_t *)&zone3, sizeof(zone3));
     if (zone1.enabled != zone1_enabled_old){
       setZoneStatus(1);
     }
