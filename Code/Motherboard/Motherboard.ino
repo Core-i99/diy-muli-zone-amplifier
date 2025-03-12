@@ -11,6 +11,7 @@ Note: config.json must be present on the SD card
 #include "Audio.h"
 #include <Wire.h>
 #include <RotaryEncoder.h>
+#include <ElegantOTA.h>
 
 // Zone Controller I2C ADDR
 #define ZONE1_I2C_ADDR 8
@@ -69,6 +70,13 @@ unsigned long i2cTimeDelay = 50;
 bool wifiError = false;
 bool sdCardError = false;
 String errorMsg = "";
+
+// ElegantOTA webserver
+// https://github.com/ayushsharma82/ElegantOTA/blob/master/examples/Demo/Demo.ino
+WebServer server(80);
+
+// Hostname:
+const char* hostname = "esp32-versterker";
 
 IRAM_ATTR void roCheckPosition()
 {
@@ -279,9 +287,11 @@ void setup()
     SD.end();
 
     // Connect to wifi
+    WiFi.setHostname(hostname);
     WiFi.disconnect();
     WiFi.mode(WIFI_STA);
     WiFi.begin(config.ssid, config.pass);
+    WiFi.setSleep(false); 
     startupTFT("Verbinden met WIFI (10)");
     int wifiTries = 0;
     while (WiFi.status() != WL_CONNECTED) {
@@ -307,7 +317,7 @@ void setup()
   // Connect to internet radio (I2S)
   startupTFT("Verbinden met internet radio");
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-  audio.setVolumeSteps(100); // max 255
+  audio.setVolumeSteps(100); // max 100
   audio.setVolume(25);
 
   // Connect to zone controllers (I2C)
@@ -357,14 +367,24 @@ void setup()
   }
   // Audio Input
   setAudioInput();
+
+  // ElegantOTA
+  server.on("/", []() {
+    server.send(200, "text/plain", "ESP32 Radio");
+  });
+  server.begin();
+  ElegantOTA.begin(&server);    // Start ElegantOTA
 }
 
 void loop()
 {
   if (!sdCardError && !wifiError)
   {
+
     // Internet Radio (I2S)
     audio.loop();
+    server.handleClient();
+    ElegantOTA.loop();
 
     // Rotary encoder RO    
     if (encoder->getPosition() > 1)
