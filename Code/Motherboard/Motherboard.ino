@@ -234,6 +234,100 @@ int getZoneY(int zone){
   }
 }
 
+void audioTask(void *pvParameters) {
+  while (true) {
+    if (!sdCardError && !wifiError) {
+      audio.loop();
+      server.handleClient();
+      ElegantOTA.loop();
+    }
+    vTaskDelay(1);
+  }
+}
+
+void controlTask(void *pvParameters) {
+  while (true) {
+    if (!sdCardError && !wifiError) {
+      // Rotary encoder RO    
+      if (encoder->getPosition() > 1)
+      {
+        current_radio_station++;
+        if (current_radio_station > number_of_radio_stations -1){
+          current_radio_station = 0;
+        }
+        encoder->setPosition(0);
+        setRadioStation();
+      }
+      else if (encoder->getPosition() < -1)
+      {
+        current_radio_station--;
+        if (current_radio_station > number_of_radio_stations -1){
+          current_radio_station = number_of_radio_stations-1;
+        }
+        encoder->setPosition(0);
+        setRadioStation();
+      }
+    }
+
+    // Rotary encoder SW
+    int roReading = digitalRead(RO_IN_SW);
+    if (roReading != lastRoState) {
+      roLastDebounceTime = millis();
+    }
+    if ((millis() - roLastDebounceTime) > roDebounceDelay){
+      if (roReading != roState) {
+        roState = roReading;
+        if (roState == LOW) {
+          if (current_audio_input == 3){
+            current_audio_input = 0;
+          }
+          else {
+            current_audio_input++;
+          }
+          setAudioInput();
+        }
+      }
+    }
+    lastRoState = roReading;
+
+    // Read from Zone Controllers (I2C)
+    if ((millis() - lastI2cTime) > i2cTimeDelay) {
+      int16_t zone1_vol_old = zone1.volume;
+      bool zone1_enabled_old = zone1.enabled;
+      int16_t zone2_vol_old = zone2.volume;
+      bool zone2_enabled_old = zone2.enabled;
+      int16_t zone3_vol_old = zone3.volume;
+      bool zone3_enabled_old = zone3.enabled;
+      Wire.requestFrom(ZONE1_I2C_ADDR, sizeof(zone1));
+      Wire.readBytes((uint8_t *)&zone1, sizeof(zone1));
+      Wire.requestFrom(ZONE2_I2C_ADDR, sizeof(zone2));
+      Wire.readBytes((uint8_t *)&zone2, sizeof(zone2));
+      Wire.requestFrom(ZONE3_I2C_ADDR, sizeof(zone3));
+      Wire.readBytes((uint8_t *)&zone3, sizeof(zone3));
+      if (zone1.enabled != zone1_enabled_old){
+        setZoneStatus(1);
+      }
+      if (zone1.volume != zone1_vol_old){
+        setZoneVolume(1);
+      }
+      if (zone2.enabled != zone2_enabled_old){
+        setZoneStatus(2);
+      }
+      if (zone2.volume != zone2_vol_old){
+        setZoneVolume(2);
+      }
+      if (zone3.enabled != zone3_enabled_old){
+        setZoneStatus(3);
+      }
+      if (zone3.volume != zone3_vol_old){
+        setZoneVolume(3);
+      }
+      lastI2cTime = millis();
+    }
+    vTaskDelay(1);
+  }
+}
+
 void setup()
 {
   // Setup Serial
@@ -373,102 +467,15 @@ void setup()
   });
   server.begin();
   ElegantOTA.begin(&server);    // Start ElegantOTA
+
+  // Start FreeRTOS tasks
+  xTaskCreatePinnedToCore(audioTask, "AudioTask", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(controlTask, "ControlTask", 4096, NULL, 1, NULL, 1);
 }
 
 void loop()
 {
-  if (!sdCardError && !wifiError)
-  {
-
-    // Internet Radio (I2S)
-    audio.loop();
-    server.handleClient();
-    ElegantOTA.loop();
-
-    // Rotary encoder RO    
-    if (encoder->getPosition() > 1)
-    {
-      // Serial.println("RO Position changed");
-      current_radio_station++;
-      if (current_radio_station > number_of_radio_stations -1){
-        current_radio_station = 0;
-      }
-      encoder->setPosition(0);
-      setRadioStation();
-    }
-    else if (encoder->getPosition() < -1)
-    {
-      // Serial.println("RO Position changed");
-      current_radio_station--;
-      if (current_radio_station > number_of_radio_stations -1){
-        current_radio_station = number_of_radio_stations-1;
-      }
-      encoder->setPosition(0);
-      setRadioStation();
-    }
-  }
-
-  // Rotary encoder SW
-  int roReading = digitalRead(RO_IN_SW);
-  if (roReading != lastRoState) {
-    roLastDebounceTime = millis();
-  }
-
-  if ((millis() - roLastDebounceTime) > roDebounceDelay){
-    // if the button state has changed:
-    if (roReading != roState) {
-      roState = roReading;
-      if (roState == LOW) {
-        // Serial.println("RO Button pressed!");
-        if (current_audio_input == 3){
-          current_audio_input = 0;
-        }
-        else {
-          current_audio_input++;
-        }
-        setAudioInput();
-      }
-    }
-  }
-  lastRoState = roReading;
-
-  // // Read from Zone Controllers (I2C)
-  if ((millis() - lastI2cTime) > i2cTimeDelay) {
-    int16_t zone1_vol_old = zone1.volume;
-    bool zone1_enabled_old = zone1.enabled;
-    int16_t zone2_vol_old = zone2.volume;
-    bool zone2_enabled_old = zone2.enabled;
-    int16_t zone3_vol_old = zone3.volume;
-    bool zone3_enabled_old = zone3.enabled;
-    //Serial.println("Zone 1 i2c");
-    Wire.requestFrom(ZONE1_I2C_ADDR, sizeof(zone1));
-    Wire.readBytes((uint8_t *)&zone1, sizeof(zone1));
-    // Serial.println("Zone 2 i2c");
-    Wire.requestFrom(ZONE2_I2C_ADDR, sizeof(zone2));
-    Wire.readBytes((uint8_t *)&zone2, sizeof(zone2));
-    // Serial.println("Zone 3 i2c");
-    Wire.requestFrom(ZONE3_I2C_ADDR, sizeof(zone3));
-    Wire.readBytes((uint8_t *)&zone3, sizeof(zone3));
-    if (zone1.enabled != zone1_enabled_old){
-      setZoneStatus(1);
-    }
-    if (zone1.volume != zone1_vol_old){
-      setZoneVolume(1);
-    }
-    if (zone2.enabled != zone2_enabled_old){
-      setZoneStatus(2);
-    }
-    if (zone2.volume != zone2_vol_old){
-      setZoneVolume(2);
-    }
-    if (zone3.enabled != zone3_enabled_old){
-      setZoneStatus(3);
-    }
-    if (zone3.volume != zone3_vol_old){
-      setZoneVolume(3);
-    }
-    lastI2cTime = millis();
-  }
+  vTaskDelay(portMAX_DELAY); // Tasks run independently
 }
 
 
