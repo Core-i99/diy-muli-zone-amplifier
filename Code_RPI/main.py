@@ -134,10 +134,114 @@ def read_zone_state(addr: int, bus_num: int = 1, num_bytes: int = 3):
 RADIO_STATIONS = {
     "Test": "http://stream.rockantenne.de/70er-rock/stream/mp3",
     "Radio 2 Antwerpen": "http://icecast.vrtcdn.be/ra2ant-high.mp3",
+    "Nostalgie": "https://playerservices.streamtheworld.com/api/livestream-redirect/NOSTALGIEWHATAFEELING.mp3",
+    "JOE FM": "https://playerservices.streamtheworld.com/api/livestream-redirect/JOE_SC",
     "Radio 1": "http://icecast.vrtcdn.be/radio1-high.mp3",
     "Studio Brussel": "http://icecast.vrtcdn.be/stubru-high.mp3",
     "MNM": "http://icecast.vrtcdn.be/mnm-high.mp3",
 }
+
+
+# Hardware pin assignments for the input selector (BCM numbering).
+# These are module-level so helper functions and callbacks can access them.
+INPUT_SELECT_A = 16
+INPUT_SELECT_B = 12
+# Backlight control pin (BCM)
+BACKLIGHT_PIN = 6
+
+# Backlight state / activity tracking
+# timestamp of last state change (seconds since epoch)
+_last_state_change_ts = time.time()
+# current backlight logical state (True=on, False=off)
+_backlight_on = True
+# lock to protect backlight state
+_backlight_lock = threading.Lock()
+
+
+def set_input_select_pins(input_source: str):
+    """Set the INPUT_SELECT_A / INPUT_SELECT_B pins according to the
+    given input_source string. Mapping follows the motherboard logic:
+      Internet Radio -> A=LOW,  B=LOW
+      CD1           -> A=LOW,  B=HIGH
+      CD2           -> A=HIGH, B=LOW
+      CD3           -> A=HIGH, B=HIGH
+
+    This function is defensive: it tolerates the development fallback
+    GPIO implementation and logs errors rather than raising.
+    """
+    # Determine logical HIGH/LOW values in a portable way.
+    high = getattr(GPIO, 'HIGH', 1) or 1
+    low = getattr(GPIO, 'LOW', 0) or 0
+
+    mapping = {
+        'Internet Radio': (low, low),
+        'CD1': (low, high),
+        'CD2': (high, low),
+        'CD3': (high, high),
+    }
+
+    a_state, b_state = mapping.get(input_source, (low, low))
+    try:
+        GPIO.output(INPUT_SELECT_A, a_state)
+        GPIO.output(INPUT_SELECT_B, b_state)
+    except Exception:
+        # Don't fail the UI if GPIO isn't available; log and continue.
+        logging.exception("Failed to set input select pins for %s", input_source)
+
+
+def set_backlight(on: bool):
+    """Set the hardware backlight pin (best-effort).
+
+    This is safe to call in environments without real GPIO; failures are
+    logged but ignored so the UI continues to work on development machines.
+    """
+    global _backlight_on
+    high = getattr(GPIO, 'HIGH', 1) or 1
+    low = getattr(GPIO, 'LOW', 0) or 0
+    try:
+        GPIO.output(BACKLIGHT_PIN, low if on else high)
+    except Exception:
+        # non-fatal on dev machines
+        logging.debug("set_backlight: GPIO.output not available")
+    with _backlight_lock:
+        _backlight_on = bool(on)
+
+
+def mark_state_changed():
+    """Record that the state has changed and ensure backlight is on.
+
+    Call this whenever any value in `state` is modified so the idle timer
+    will be reset and the backlight will be turned on.
+    """
+    global _last_state_change_ts
+    _last_state_change_ts = time.time()
+    try:
+        set_backlight(True)
+    except Exception:
+        logging.exception("mark_state_changed: set_backlight failed")
+
+
+def backlight_watcher(stop_evt, timeout_seconds: float = 60.0, check_interval: float = 1.0):
+    """Background watcher that turns the backlight off after `timeout_seconds`
+    seconds of no recorded state changes. The watcher respects `stop_evt` and
+    exits promptly when set.
+    """
+    while not stop_evt.is_set():
+        try:
+            now = time.time()
+            last = _last_state_change_ts
+            with _backlight_lock:
+                currently_on = _backlight_on
+            if last is not None and (now - last) >= float(timeout_seconds) and currently_on:
+                try:
+                    set_backlight(False)
+                except Exception:
+                    logging.exception("backlight_watcher: failed to turn backlight off")
+            stop_evt.wait(check_interval)
+        except Exception:
+            logging.exception("backlight_watcher encountered an unexpected error")
+            stop_evt.wait(check_interval)
+
 
 
 def render_display(state):
@@ -208,6 +312,11 @@ def choose_input(state):
                 # If not Internet Radio, clear radio selection
                 state["radio_station_selected"] = False
                 state["station_name"] = None
+            # record state change (reset backlight idle timer)
+            try:
+                mark_state_changed()
+            except Exception:
+                logging.exception("choose_input: mark_state_changed failed")
     except ValueError:
         print("Invalid choice")
 
@@ -233,6 +342,11 @@ def choose_radio_station(state):
             print("Invalid station number")
     except ValueError:
         print("Invalid choice")
+    # record state change (reset backlight idle timer)
+    try:
+        mark_state_changed()
+    except Exception:
+        logging.exception("choose_radio_station: mark_state_changed failed")
 
 
 def toggle_zone(state):
@@ -243,6 +357,11 @@ def toggle_zone(state):
         if 0 <= i < 3:
             state["zones"][i] = not state["zones"][i]
             print(f"Zone {i+1} set to {'ON' if state['zones'][i] else 'OFF'}")
+            # record state change (reset backlight idle timer)
+            try:
+                mark_state_changed()
+            except Exception:
+                logging.exception("toggle_zone: mark_state_changed failed")
         else:
             print("Invalid zone number")
     except ValueError:
@@ -267,7 +386,7 @@ def poll_zones(state, addresses=(8, 9, 10), bus_num: int = 1):
                 logging.warning("Skipping update for addr %s due to invalid read", addr)
                 continue
             enabled, volume = res
-            print(f"Polled addr {addr}: enabled={enabled}, volume={volume}")
+            # print(f"Polled addr {addr}: enabled={enabled}, volume={volume}")
         except Exception as exc:
             logging.warning("Unhandled exception while polling addr %s: %s", addr, exc)
             # keep previous values
@@ -589,6 +708,11 @@ def zone_poller(stop_evt, state, state_lock, render_queue, interval: float = 0.0
                 if state != previous_state:
                     # make a shallow copy (deep enough for our small state) to render
                     snapshot = copy.deepcopy(state)
+                    # mark that the state changed so backlight idle timer resets
+                    try:
+                        mark_state_changed()
+                    except Exception:
+                        logging.exception("zone_poller: mark_state_changed failed")
                     try:
                         # If queue is full (previous render pending), replace it with newest state
                         render_queue.put_nowait(snapshot)
@@ -662,11 +786,23 @@ def cycle_input(state, state_lock, player_container):
             state["radio_station_selected"] = False
             state["station_name"] = None
 
+        # Update selector hardware pins to reflect the newly selected input.
+        try:
+            set_input_select_pins(new)
+        except Exception:
+            logging.exception("Failed to update input selector pins after switching to %s", new)
+
         # immediate feedback on display
         try:
             render_display(state)
         except Exception:
             logging.exception("Failed to render display after cycling input")
+
+        # record state change (reset backlight idle timer)
+        try:
+            mark_state_changed()
+        except Exception:
+            logging.exception("cycle_input: mark_state_changed failed")
 
         # If we've switched away from Internet Radio, stop playback (if available).
         if new != "Internet Radio":
@@ -737,6 +873,12 @@ def rotate_handler(direction: str, state=None, state_lock=None, player_container
         except Exception:
             logging.exception("Failed to render display after station change")
 
+        # record state change (reset backlight idle timer)
+        try:
+            mark_state_changed()
+        except Exception:
+            logging.exception("rotate_handler: mark_state_changed failed")
+
     # Attempt to start playback for the newly selected station. Be defensive if player
     # isn't initialized yet or playback fails. Use worker when available to avoid UI blocking.
     try:
@@ -769,7 +911,7 @@ def rotate_handler(direction: str, state=None, state_lock=None, player_container
     print(f"Radio station: {state.get('station_name')}")
 
 
-def shutdown(reason: str, stop_event, poller_thread, encoder_thread, player_container, render_thread, device):
+def shutdown(reason: str, stop_event, poller_thread, encoder_thread, player_container, render_thread, device, backlight_thread=None):
     """Unified shutdown/cleanup function used by signal handler and exception paths.
 
     Accepts explicit references to threads, player container and device so it can be
@@ -833,6 +975,16 @@ def shutdown(reason: str, stop_event, poller_thread, encoder_thread, player_cont
     except Exception:
         pass
 
+    # Join backlight watcher thread if provided
+    try:
+        if backlight_thread is not None:
+            try:
+                backlight_thread.join(timeout=1.0)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # Cleanup GPIO (no-op on fallback)
     try:
         GPIO.cleanup()
@@ -864,7 +1016,7 @@ def main():
     state = {
         "input_source": "Internet Radio",
         "radio_station_selected": True,
-            "station_name": (list(RADIO_STATIONS.keys())[0] if RADIO_STATIONS else None),
+            "station_name": (list(RADIO_STATIONS.keys())[1] if RADIO_STATIONS else None),
         # zones and volumes will be populated from I2C; provide sensible defaults
         "zones": [False, False, False],
         "volumes": [0, 0, 0],
@@ -908,8 +1060,6 @@ def main():
     try:
         GPIO.setwarnings(False)
         GPIO.setmode(GPIO.BCM)
-        # Configure pin 6 as output and drive it low (connected to ground)
-        GPIO.setup(6, GPIO.OUT, initial=GPIO.LOW)
         # Setup rotary encoder pins (BCM numbering). Using CLK/DT convention.
         ENCODER_PIN_A = 27  # CLK
         ENCODER_PIN_B = 17  # DT
@@ -920,6 +1070,14 @@ def main():
             GPIO.setup(ENCODER_PIN_A, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
             GPIO.setup(ENCODER_PIN_B, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
             GPIO.setup(ENCODER_BTN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+            GPIO.setup(INPUT_SELECT_A, GPIO.OUT, initial=GPIO.LOW)
+            GPIO.setup(INPUT_SELECT_B, GPIO.OUT, initial=GPIO.LOW)
+            GPIO.setup(BACKLIGHT_PIN, GPIO.OUT, initial=GPIO.LOW)
+            # Ensure hardware matches the logical initial input
+            try:
+                set_input_select_pins(state.get('input_source', 'Internet Radio'))
+            except Exception:
+                logging.exception("Failed to initialize input select pins to initial state")
         except TypeError:
             # Some GPIO fallbacks may not accept keyword args; try without them
             try:
@@ -932,13 +1090,22 @@ def main():
     except Exception:
         logging.exception("Failed to configure GPIO pin 16; continuing without GPIO control")
 
+    # Ensure backlight is initially on and start backlight watcher thread
+    try:
+        set_backlight(True)
+    except Exception:
+        logging.exception("Failed to set initial backlight state")
+
+    backlight_thread = threading.Thread(target=backlight_watcher, args=(stop_event, 60.0), daemon=True)
+    backlight_thread.start()
+
     # Encoder callbacks use module-level functions; player_container will hold the player
     # reference and is populated after player creation below.
     player_container = { 'player': None }
 
     STREAM_URL = RADIO_STATIONS.get(state.get("station_name")) if state.get("radio_station_selected") else None
     ALSA_DEVICE = "default"
-    VOLUME_PERCENT = 15
+    VOLUME_PERCENT = 50
 
     player = I2SPlayer(alsa_device=ALSA_DEVICE)  # change alsa_device if your I2S DAC is on another card
 
@@ -961,8 +1128,8 @@ def main():
         target=monitor_rotary_encoder,
         args=(
             stop_event,
-            ENCODER_PIN_A,
             ENCODER_PIN_B,
+            ENCODER_PIN_A,
             ENCODER_BTN,
             # on_button and on_rotate: call module-level handlers with explicit refs
             lambda: cycle_input(state, state_lock, player_container),
@@ -973,8 +1140,8 @@ def main():
     encoder_thread.start()
 
     # Register OS signal handlers to call the module-level shutdown function.
-    signal.signal(signal.SIGINT, lambda s, f: shutdown(f"Signal {s} received - initiating shutdown", stop_event, poller_thread, encoder_thread, player_container, render_thread, device))
-    signal.signal(signal.SIGTERM, lambda s, f: shutdown(f"Signal {s} received - initiating shutdown", stop_event, poller_thread, encoder_thread, player_container, render_thread, device))
+    signal.signal(signal.SIGINT, lambda s, f: shutdown(f"Signal {s} received - initiating shutdown", stop_event, poller_thread, encoder_thread, player_container, render_thread, device, backlight_thread))
+    signal.signal(signal.SIGTERM, lambda s, f: shutdown(f"Signal {s} received - initiating shutdown", stop_event, poller_thread, encoder_thread, player_container, render_thread, device, backlight_thread))
 
     print("Starting playback:", STREAM_URL)
     try:
@@ -997,13 +1164,13 @@ def main():
             stop_event.wait(timeout=1.0)
     except KeyboardInterrupt:
         # Fallback in case Ctrl+C arrives before our signal handler was registered
-        shutdown("Keyboard interrupt received", stop_event, poller_thread, encoder_thread, player_container, render_thread, device)
+        shutdown("Keyboard interrupt received", stop_event, poller_thread, encoder_thread, player_container, render_thread, device, backlight_thread)
     except Exception:
         logging.exception("Unexpected error in main loop")
-        shutdown("Unexpected error in main loop", stop_event, poller_thread, encoder_thread, player_container, render_thread, device)
+        shutdown("Unexpected error in main loop", stop_event, poller_thread, encoder_thread, player_container, render_thread, device, backlight_thread)
 
     # Ensure we perform final cleanup before exiting
-    shutdown("Exiting main", stop_event, poller_thread, encoder_thread, player_container, render_thread, device)
+    shutdown("Exiting main", stop_event, poller_thread, encoder_thread, player_container, render_thread, device, backlight_thread)
 
 
 if __name__ == "__main__":
