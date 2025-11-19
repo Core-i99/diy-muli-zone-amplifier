@@ -278,15 +278,25 @@ def render_display(state):
         draw.multiline_text((x, text_y), text, fill="white", font=header_font, align="center")
 
         # Zone status and volume
-        for i in range(3):
+        # Be defensive: the system may be configured with fewer than 3
+        # zone controllers (for example, a single zone). Use the actual
+        # configured lengths and fall back to sensible defaults when
+        # accessing lists to avoid IndexError during rendering.
+        zones = state.get("zones", []) or []
+        volumes = state.get("volumes", []) or []
+        n_zones = max(1, len(zones), len(volumes))
+
+        for i in range(n_zones):
             y = 90 + i * 75
             draw.text((5, y), f"ZONE {i+1}", fill="white", font=ZONE_FONT)
-            status = "AAN" if state["zones"][i] else "UIT"
-            color = "lightgreen" if state["zones"][i] else "red"
+
+            zone_on = zones[i] if i < len(zones) else False
+            status = "AAN" if zone_on else "UIT"
+            color = "lightgreen" if zone_on else "red"
             draw.text((225, y), status, fill=color, font=ZONE_FONT)
 
-            # show volume as a smaller number on the right
-            vol = state.get("volumes", [0, 0, 0])[i]
+            # show volume as a smaller number on the right (safe-index)
+            vol = volumes[i] if i < len(volumes) else 0
             vol_text = f"{vol}%"
             # measure width and place to the right side
             bbox_v = draw.textbbox((0, 0), vol_text, font=ZONE_FONT)
@@ -368,7 +378,7 @@ def toggle_zone(state):
         print("Invalid input")
 
 
-def poll_zones(state, addresses=(8, 9, 10), bus_num: int = 1):
+def poll_zones(state, addresses=[8, 9, 10], bus_num: int = 1): # 8, 9, 10
     """Poll each zone controller via I2C and update state['zones'] and state['volumes'].
 
     This function is resilient: on read errors it keeps previous values and
@@ -405,7 +415,7 @@ def poll_zones(state, addresses=(8, 9, 10), bus_num: int = 1):
         state["volumes"][idx] = int(volume)
 
 
-def monitor_rotary_encoder(stop_evt, pin_a: int, pin_b: int, btn_pin: int, on_button=None, on_rotate=None, poll_interval: float = 0.002):
+def monitor_rotary_encoder(stop_evt, pin_a: int, pin_b: int, btn_pin: int, on_button=None, on_rotate=None, on_long_press=None, poll_interval: float = 0.002, long_press_duration: float = 3.0):
     """Background thread: poll rotary encoder pins and print events.
 
     - Detects simple quadrature transitions and prints LEFT/RIGHT on rotation.
@@ -448,6 +458,7 @@ def monitor_rotary_encoder(stop_evt, pin_a: int, pin_b: int, btn_pin: int, on_bu
                     # RIGHT
                     if on_rotate:
                         try:
+                            print("Rotary encoder rotated RIGHT")
                             on_rotate("RIGHT")
                         except Exception:
                             logging.exception("on_rotate callback raised an exception")
@@ -458,6 +469,7 @@ def monitor_rotary_encoder(stop_evt, pin_a: int, pin_b: int, btn_pin: int, on_bu
                     # LEFT
                     if on_rotate:
                         try:
+                            print("Rotary encoder rotated LEFT")
                             on_rotate("LEFT")
                         except Exception:
                             logging.exception("on_rotate callback raised an exception")
@@ -469,13 +481,55 @@ def monitor_rotary_encoder(stop_evt, pin_a: int, pin_b: int, btn_pin: int, on_bu
 
             last_clk = current_clk
 
-            # Button detection (active-low)
-            sw = GPIO.input(btn_pin)
+            # Button detection (active-low) with long-press handling
+            try:
+                sw = GPIO.input(btn_pin)
+            except Exception:
+                sw = 1
+
             if sw != sw_prev:
+                # Button pressed (active-low)
                 if sw == 0:
+                    # basic debounce
                     time.sleep(0.03)
-                    if GPIO.input(btn_pin) == 0:
-                        # If a callback was provided, call it; otherwise print.
+                    try:
+                        if GPIO.input(btn_pin) != 0:
+                            # bounce, ignore
+                            sw_prev = GPIO.input(btn_pin)
+                            continue
+                    except Exception:
+                        pass
+
+                    press_start = time.time()
+                    long_triggered = False
+                    # Wait while button remains pressed, check for long-press
+                    while True:
+                        try:
+                            currently = GPIO.input(btn_pin)
+                        except Exception:
+                            currently = 1
+                        # If released, break out
+                        if currently != 0:
+                            break
+
+                        # If we've exceeded the long-press duration, trigger once
+                        if not long_triggered and (time.time() - press_start) >= float(long_press_duration):
+                            if on_long_press:
+                                try:
+                                    on_long_press()
+                                except Exception:
+                                    logging.exception("on_long_press callback raised an exception")
+                            else:
+                                # no callback provided; print a notice
+                                print("Long press detected")
+                            long_triggered = True
+
+                        # Sleep briefly and allow stop event to interrupt
+                        if stop_evt.wait(0.05):
+                            break
+
+                    # If button was released before long-press threshold, treat as normal press
+                    if not long_triggered:
                         if on_button:
                             try:
                                 on_button()
@@ -483,6 +537,7 @@ def monitor_rotary_encoder(stop_evt, pin_a: int, pin_b: int, btn_pin: int, on_bu
                                 logging.exception("on_button callback raised an exception")
                         else:
                             print("Rotary encoder pressed")
+
                 sw_prev = sw
         except Exception:
             # Safe fallback when GPIO isn't the real module
@@ -596,6 +651,7 @@ class I2SPlayer:
         Set volume for the ALSA mixer control (default "SoftMaster"). Percent: 0-100.
         Requires 'amixer' to be available.
         """
+        print('Setting volume to', percent)
         try:
             pct = int(max(0, min(100, int(percent))))
         except Exception:
@@ -634,21 +690,6 @@ class PlayerWorker:
     def _run(self):
         while not self._stop.is_set():
             try:
-                # Apply any pending volume changes quickly
-                try:
-                    cmd, arg = self._vol_q.get_nowait()
-                except Exception:
-                    cmd = None
-                if cmd == 'set_volume':
-                    try:
-                        self.player.set_volume(int(arg))
-                    except Exception:
-                        logging.exception("Failed to set volume to %s", arg)
-                    try:
-                        self._vol_q.task_done()
-                    except Exception:
-                        pass
-
                 target = self.player_container.get('target_url')
                 if target != self._current_url:
                     # Stop existing stream if any
@@ -675,9 +716,6 @@ class PlayerWorker:
     def stop_target(self):
         self.player_container['target_url'] = None
 
-    def set_volume_async(self, percent: int):
-        self._vol_q.put(('set_volume', percent))
-
     def shutdown(self, wait: float = 1.0):
         try:
             self._stop.set()
@@ -692,8 +730,9 @@ class PlayerWorker:
 
 
 
-def zone_poller(stop_evt, state, state_lock, render_queue, interval: float = 0.01):
-    """Background thread function: poll zones periodically until stop_evt is set.
+def zone_poller(stop_evt, state, state_lock, render_queue, interval: float = 0.050):
+    """
+    Background thread function: poll zones periodically until stop_evt is set.
 
     This is the module-level equivalent of the former nested function. It
     accepts explicit references to shared objects rather than closing over
@@ -1018,6 +1057,8 @@ def main():
         "radio_station_selected": True,
             "station_name": (list(RADIO_STATIONS.keys())[1] if RADIO_STATIONS else None),
         # zones and volumes will be populated from I2C; provide sensible defaults
+        # "zones": [False, False, False],
+        # "volumes": [0, 0, 0],
         "zones": [False, False, False],
         "volumes": [0, 0, 0],
     }
@@ -1124,6 +1165,21 @@ def main():
     player_container['target_url'] = STREAM_URL
 
     # Start rotary encoder monitor thread (uses same stop_event)
+    # Long-press handler: perform local cleanup then request OS shutdown
+    def _handle_long_press():
+        try:
+            # perform application-level cleanup
+            shutdown("Long press: initiating shutdown", stop_event, poller_thread, encoder_thread, player_container, render_thread, device, backlight_thread)
+        except Exception:
+            logging.exception("Error during graceful shutdown on long-press")
+        try:
+            # request system halt
+            print("Executing system shutdown command")
+            subprocess.run(["shutdown", "-h", "now"])
+            print("Shutdown command executed")
+        except Exception:
+            logging.exception("Failed to execute system shutdown command on long-press")
+
     encoder_thread = threading.Thread(
         target=monitor_rotary_encoder,
         args=(
@@ -1134,6 +1190,7 @@ def main():
             # on_button and on_rotate: call module-level handlers with explicit refs
             lambda: cycle_input(state, state_lock, player_container),
             lambda d: rotate_handler(d, state, state_lock, player_container),
+            _handle_long_press,
         ),
         daemon=True,
     )
@@ -1144,18 +1201,7 @@ def main():
     signal.signal(signal.SIGTERM, lambda s, f: shutdown(f"Signal {s} received - initiating shutdown", stop_event, poller_thread, encoder_thread, player_container, render_thread, device, backlight_thread))
 
     print("Starting playback:", STREAM_URL)
-    try:
-        # Ask worker to set initial volume asynchronously if available.
-        worker = player_container.get('worker')
-        if worker:
-            worker.set_volume_async(VOLUME_PERCENT)
-        else:
-            try:
-                player.set_volume(VOLUME_PERCENT)
-            except Exception:
-                logging.exception("Failed to set initial volume")
-    except Exception:
-        logging.exception("Failed to set initial volume")
+    player.set_volume(VOLUME_PERCENT)
 
     # Main thread: wait until stop_event is set by signal or by calling shutdown.
     try:

@@ -11,6 +11,7 @@ Flash instructions: see SLAVE_FLASHING.md
 #include <DigiPotX9Cxxx.h>
 #include <RotaryEncoder.h>
 
+const int I2C_ADDR = 10; // 8, 9, 10
 const int ROTARYMIN = 0;
 const int ROTARYMAX = 200;
 const int RO_IN_SW = 0;
@@ -30,10 +31,10 @@ unsigned long debounceDelay = 50;    // the debounce time; increase if the outpu
 struct Zone
 {
   int16_t volume;
-  bool enabled;
+  uint8_t enabled;  // Use uint8_t instead of bool for better control (0 or 1)
 };
 
-Zone zone1 = {0, false};
+volatile Zone zone1 = {0, 0};
 
 DigiPot pot(POT_INC, POT_UD, POT_CS);
 RotaryEncoder encoder(RO_IN_CLK, RO_IN_DT, RotaryEncoder::LatchMode::TWO03);
@@ -41,9 +42,9 @@ RotaryEncoder encoder(RO_IN_CLK, RO_IN_DT, RotaryEncoder::LatchMode::TWO03);
 // Pin for enabled
 void setup()
 {
-  Wire.begin(10); // 8, 9, 10
+  Wire.begin(I2C_ADDR);
   Wire.onRequest(requestEvent);
-  Wire.onReceive(receiveEvent);
+  // Wire.onReceive(receiveEvent); // Disabled - not currently needed
   pot.reset();
   pinMode(ZONE_ENABLE, OUTPUT);
   pinMode(RO_IN_SW, INPUT);
@@ -69,7 +70,10 @@ void loop()
 
       // only toggle the zone status if the new button state is LOW
       if (buttonState == LOW) {
+        noInterrupts(); // Disable interrupts during write
         zone1.enabled = !zone1.enabled;
+        interrupts(); // Re-enable interrupts
+        setVolume(); // Update relay immediately
       }
     }
   }
@@ -91,24 +95,32 @@ void loop()
     newPos = ROTARYMAX;
   }
   else {
-    zone1.volume = int(newPos / 2);
+    int16_t newVolume = int(newPos / 2);
+    noInterrupts(); // Protect the write from I2C interrupts
+    zone1.volume = newVolume;
+    interrupts();
     setVolume();
   }
 }
 
 void requestEvent()
 {
-  Wire.write((byte *)&zone1, sizeof(zone1));
+  // Create a temporary copy - read volatiles into local variables
+  // This is safe because each member is read atomically on AVR (8-bit and 16-bit reads)
+  Zone tempZone;
+  tempZone.volume = zone1.volume;
+  tempZone.enabled = zone1.enabled;
+  Wire.write((byte *)&tempZone, sizeof(tempZone));
 }
 
-void receiveEvent(int bytes)
-{
-  for (int i = 0; i < sizeof(zone1); i++) {
-    ((uint8_t*)&zone1)[i] = Wire.read();
-  }
-  encoder.setPosition(zone1.volume * 2);
-  setVolume();
-}
+// void receiveEvent(int bytes)
+// {
+//   for (int i = 0; i < sizeof(zone1); i++) {
+//     ((uint8_t*)&zone1)[i] = Wire.read();
+//   }
+//   encoder.setPosition(zone1.volume * 2);
+//   setVolume();
+// }
 
 void setVolume()
 {

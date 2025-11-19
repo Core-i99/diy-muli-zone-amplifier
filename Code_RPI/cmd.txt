@@ -7,4 +7,5 @@ alsamixer
 source luma-env/bin/activate
 
 source luma-env/bin/activate && cd sftp/Code_RPI && python3 I2S.py
+source luma-env/bin/activate && cd sftp/Code_RPI && python3 main.py
 source luma-env/bin/activate && python3 test.py
