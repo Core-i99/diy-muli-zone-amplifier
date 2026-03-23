@@ -1,5 +1,5 @@
 argcomplete==3.6.3
-cbor2==5.7.1
+cbor2==5.9.0
 luma.core==2.5.1
 luma.emulator==1.5.0
 -e git+https://github.com/rm-hull/luma.examples.git@99af9d29842adc7f3b6016c9c5e5683d28ee277a#egg=luma.examples
